@@ -1,0 +1,3 @@
+claim_id,food_id,receiver_id,status
+C001,F001,R001,Completed
+C002,F002,R002,Pending
