@@ -1,30 +1,33 @@
 import streamlit as st
 import pandas as pd
-from sqlalchemy import create_engine, text
-
-# ---- DATABASE CONNECTION ----
-DB_USER = "postgres"          
-DB_PASS = "Ajay2000"               
-DB_HOST = "localhost"
-DB_PORT = "5432"
-DB_NAME = "Food_waste"
-
-engine = create_engine(f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
+import os
 
 # ---- STREAMLIT SETUP ----
 st.set_page_config(page_title="Food Waste Dashboard", layout="wide")
 st.title("🌱 Food Waste Management Dashboard")
 
+# ---- LOAD DATA FROM CSV ----
+@st.cache_data
+def load_data():
+    base_path = os.path.dirname(__file__)
+    providers = pd.read_csv(os.path.join(base_path, 'providers_data.csv'))
+    receivers = pd.read_csv(os.path.join(base_path, 'receivers_data.csv'))
+    food = pd.read_csv(os.path.join(base_path, 'food_listings_data.csv'))
+    claims = pd.read_csv(os.path.join(base_path, 'claims_data.csv'))
+    return providers, receivers, food, claims
+
+providers, receivers, food, claims = load_data()
+
 # ---- FILTER OPTIONS ----
-city_list = pd.read_sql("SELECT DISTINCT city FROM providers_data", engine)['city'].tolist()
-food_types = pd.read_sql("SELECT DISTINCT food_type FROM food_listings_data", engine)['food_type'].tolist()
-meal_types = pd.read_sql("SELECT DISTINCT meal_type FROM food_listings_data", engine)['meal_type'].tolist()
+city_list = sorted(providers['city'].dropna().unique().tolist())
+food_types = sorted(food['food_type'].dropna().unique().tolist())
+meal_types = sorted(food['meal_type'].dropna().unique().tolist())
 
 selected_city = st.sidebar.selectbox("Filter by City", ["All"] + city_list)
 selected_food = st.sidebar.selectbox("Filter by Food Type", ["All"] + food_types)
 selected_meal = st.sidebar.selectbox("Filter by Meal Type", ["All"] + meal_types)
 
-# ---- REPORT MENU ----
+# ---- SIDEBAR MENU ----
 menu = st.sidebar.selectbox("Choose a report", [
     "Total Providers per City",
     "Total Receivers per City",
@@ -51,130 +54,105 @@ menu = st.sidebar.selectbox("Choose a report", [
     "Delete a Food Item"
 ])
 
-# ---- MAIN QUERIES ----
-queries = {
-    "Total Providers per City": """
-        SELECT city, COUNT(*) AS total_providers
-        FROM providers_data
-        GROUP BY city ORDER BY total_providers DESC;
-    """,
-    "Total Receivers per City": """
-        SELECT city, COUNT(*) AS total_receivers
-        FROM receivers_data
-        GROUP BY city ORDER BY total_receivers DESC;
-    """,
-    "Top Contributing Provider Type": """
-        SELECT type, COUNT(*) AS count FROM providers_data
-        GROUP BY type ORDER BY count DESC LIMIT 1;
-    """,
-    "Top Food Receiver": """
-        SELECT r.name AS receiver_name, COUNT(c.claim_id) AS total_claims
-        FROM receivers_data r JOIN claims_data c ON r.receiver_id = c.receiver_id
-        GROUP BY r.name ORDER BY total_claims DESC LIMIT 1;
-    """,
-    "Total Quantity of Food Available": """
-        SELECT SUM(quantity) AS total_quantity FROM food_listings_data;
-    """,
-    "City with Highest Food Listings": """
-        SELECT location AS city, COUNT(*) AS total_listings
-        FROM food_listings_data GROUP BY location ORDER BY total_listings DESC LIMIT 1;
-    """,
-    "Most Common Food Types": """
-        SELECT food_type, COUNT(*) AS count FROM food_listings_data
-        GROUP BY food_type ORDER BY count DESC LIMIT 2;
-    """,
-    "Claims per Food Item": """
-        SELECT food_name, COUNT(*) AS number_of_claims
-        FROM claims_data c JOIN food_listings_data f ON c.food_id = f.food_id
-        GROUP BY food_name;
-    """,
-    "Top Provider by Completed Claims": """
-        SELECT p.name, COUNT(*) AS successful_claims
-        FROM claims_data c
-        JOIN food_listings_data f ON c.food_id = f.food_id
-        JOIN providers_data p ON f.provider_id = p.provider_id
-        WHERE c.status = 'Completed'
-        GROUP BY p.name ORDER BY successful_claims DESC LIMIT 1;
-    """,
-    "Claims Status % Distribution": """
-        SELECT status, COUNT(*) AS claim_count,
-        ROUND((COUNT(*) * 100.0 / (SELECT COUNT(*) FROM claims_data)), 2) AS percentage
-        FROM claims_data GROUP BY status;
-    """,
-    "Average Quantity Claimed per Receiver": """
-        SELECT r.name, AVG(f.quantity) AS avg_quantity
-        FROM claims_data c
-        JOIN food_listings_data f ON c.food_id = f.food_id
-        JOIN receivers_data r ON c.receiver_id = r.receiver_id
-        GROUP BY r.name;
-    """,
-    "Top Claimed Meal Type": """
-        SELECT meal_type, COUNT(*) AS count
-        FROM claims_data c
-        JOIN food_listings_data f ON c.food_id = f.food_id
-        GROUP BY meal_type ORDER BY count DESC LIMIT 1;
-    """,
-    "Total Quantity Donated by Each Provider": """
-        SELECT p.name AS provider_name, SUM(f.quantity) AS total_quantity
-        FROM food_listings_data f
-        JOIN providers_data p ON f.provider_id = p.provider_id
-        GROUP BY p.name ORDER BY total_quantity DESC;
-    """,
-    "Unclaimed Food Items": """
-        SELECT f.food_name, f.food_id FROM food_listings_data f
-        LEFT JOIN claims_data c ON f.food_id = c.food_id
-        WHERE c.claim_id IS NULL;
-    """,
-    "Receiver Types with Most Claims": """
-        SELECT r.type, COUNT(*) AS total_claims FROM claims_data c
-        JOIN receivers_data r ON c.receiver_id = r.receiver_id
-        GROUP BY r.type ORDER BY total_claims DESC;
-    """,
-    "Duplicate Food Listings": """
-        SELECT food_name, provider_id, COUNT(*) AS duplicates
-        FROM food_listings_data GROUP BY food_name, provider_id
-        HAVING COUNT(*) > 1;
-    """,
-    "Providers with Multiple Meal Types": """
-        SELECT provider_id FROM food_listings_data
-        GROUP BY provider_id HAVING COUNT(DISTINCT meal_type) > 1;
-    """,
-    "Top Food Listing Days": """
-        SELECT expiry_date, COUNT(*) AS new_listings FROM food_listings_data
-        GROUP BY expiry_date ORDER BY new_listings DESC LIMIT 5;
-    """,
-    "Providers with Avg Quantity > 10": """
-        SELECT provider_id, AVG(quantity) AS avg_quantity FROM food_listings_data
-        GROUP BY provider_id HAVING AVG(quantity) > 10;
-    """,
-    "Vegetarian/Vegan Only Providers": """
-        SELECT provider_id FROM food_listings_data
-        GROUP BY provider_id HAVING COUNT(DISTINCT food_type) = 1
-        AND MIN(food_type) IN ('Vegetarian', 'Vegan');
-    """,
-    "City with Most Cancelled Claims": """
-        SELECT r.city, COUNT(*) AS cancelled_claims
-        FROM claims_data c JOIN receivers_data r ON c.receiver_id = r.receiver_id
-        WHERE c.status = 'Cancelled'
-        GROUP BY r.city ORDER BY cancelled_claims DESC LIMIT 1;
-    """
-}
+# ---- ANALYTICS ----
+if menu == "Total Providers per City":
+    df = providers.groupby("city").size().reset_index(name="total_providers")
+    st.dataframe(df)
 
-# ---- QUERY EXECUTION ----
-def run_query(query):
-    return pd.read_sql(text(query), engine)
+elif menu == "Total Receivers per City":
+    df = receivers.groupby("city").size().reset_index(name="total_receivers")
+    st.dataframe(df)
 
-if menu in queries:
-    df = run_query(queries[menu])
-    st.subheader(menu)
-    if menu == "Claims Status % Distribution":
-        st.bar_chart(df.set_index("status")["percentage"])
-    else:
-        st.dataframe(df)
+elif menu == "Top Contributing Provider Type":
+    df = providers['type'].value_counts().reset_index().rename(columns={'index': 'provider_type', 'type': 'count'})
+    st.dataframe(df.head(1))
 
-# ---- CRUD: ADD FOOD ----
+elif menu == "Top Food Receiver":
+    df = claims.merge(receivers, on="receiver_id")
+    df = df['name'].value_counts().reset_index().rename(columns={'index': 'receiver_name', 'name': 'total_claims'})
+    st.dataframe(df.head(1))
+
+elif menu == "Total Quantity of Food Available":
+    st.metric("Total Quantity Available", int(food['quantity'].sum()))
+
+elif menu == "City with Highest Food Listings":
+    df = food['location'].value_counts().reset_index().rename(columns={'index': 'city', 'location': 'total_listings'})
+    st.dataframe(df.head(1))
+
+elif menu == "Most Common Food Types":
+    df = food['food_type'].value_counts().reset_index().rename(columns={'index': 'food_type', 'food_type': 'count'})
+    st.dataframe(df.head(2))
+
+elif menu == "Claims per Food Item":
+    df = claims.merge(food, on='food_id')
+    df = df['food_name'].value_counts().reset_index().rename(columns={'index': 'food_name', 'food_name': 'number_of_claims'})
+    st.dataframe(df)
+
+elif menu == "Top Provider by Completed Claims":
+    df = claims[claims['status'] == 'Completed'].merge(food, on='food_id').merge(providers, on='provider_id')
+    df = df['name'].value_counts().reset_index().rename(columns={'index': 'provider_name', 'name': 'successful_claims'})
+    st.dataframe(df.head(1))
+
+elif menu == "Claims Status % Distribution":
+    status_count = claims['status'].value_counts(normalize=True).mul(100).round(2).reset_index()
+    status_count.columns = ['status', 'percentage']
+    st.bar_chart(status_count.set_index('status'))
+
+elif menu == "Average Quantity Claimed per Receiver":
+    df = claims.merge(food, on='food_id').merge(receivers, on='receiver_id')
+    df = df.groupby('name')['quantity'].mean().reset_index(name='avg_quantity')
+    st.dataframe(df)
+
+elif menu == "Top Claimed Meal Type":
+    df = claims.merge(food, on='food_id')
+    df = df['meal_type'].value_counts().reset_index().rename(columns={'index': 'meal_type', 'meal_type': 'count'})
+    st.dataframe(df.head(1))
+
+elif menu == "Total Quantity Donated by Each Provider":
+    df = food.merge(providers, on='provider_id')
+    df = df.groupby('name')['quantity'].sum().reset_index(name='total_quantity')
+    st.dataframe(df)
+
+elif menu == "Unclaimed Food Items":
+    df = food[~food['food_id'].isin(claims['food_id'])]
+    st.dataframe(df[['food_id', 'food_name']])
+
+elif menu == "Receiver Types with Most Claims":
+    df = claims.merge(receivers, on='receiver_id')
+    df = df['type'].value_counts().reset_index().rename(columns={'index': 'receiver_type', 'type': 'total_claims'})
+    st.dataframe(df)
+
+elif menu == "Duplicate Food Listings":
+    df = food.groupby(['food_name', 'provider_id']).size().reset_index(name='duplicates')
+    df = df[df['duplicates'] > 1]
+    st.dataframe(df)
+
+elif menu == "Providers with Multiple Meal Types":
+    df = food.groupby('provider_id')['meal_type'].nunique().reset_index()
+    df = df[df['meal_type'] > 1]
+    st.dataframe(df)
+
+elif menu == "Top Food Listing Days":
+    df = food['expiry_date'].value_counts().reset_index().rename(columns={'index': 'expiry_date', 'expiry_date': 'new_listings'})
+    st.dataframe(df.head(5))
+
+elif menu == "Providers with Avg Quantity > 10":
+    df = food.groupby('provider_id')['quantity'].mean().reset_index()
+    df = df[df['quantity'] > 10]
+    st.dataframe(df)
+
+elif menu == "Vegetarian/Vegan Only Providers":
+    df = food.groupby('provider_id')['food_type'].nunique().reset_index()
+    df = df[(df['food_type'] == 1) & (food.groupby('provider_id')['food_type'].min().isin(['Vegetarian', 'Vegan']))]
+    st.dataframe(df)
+
+elif menu == "City with Most Cancelled Claims":
+    df = claims[claims['status'] == 'Cancelled'].merge(receivers, on='receiver_id')
+    df = df['city'].value_counts().reset_index().rename(columns={'index': 'city', 'city': 'cancelled_claims'})
+    st.dataframe(df.head(1))
+
 elif menu == "Add New Food Listing":
-    st.subheader("➕ Add New Food Listing")
+    st.subheader("➕ Add New Food Listing (Temporary)")
     with st.form("add_form"):
         food_id = st.text_input("Food ID")
         food_name = st.text_input("Food Name")
@@ -188,21 +166,25 @@ elif menu == "Add New Food Listing":
         submit = st.form_submit_button("Add Food")
 
         if submit:
-            with engine.begin() as conn:
-                conn.execute(text("""
-                    INSERT INTO food_listings_data
-                    (food_id, food_name, quantity, expiry_date, provider_id, provider_type, location, food_type, meal_type)
-                    VALUES (:food_id, :food_name, :quantity, :expiry_date, :provider_id, :provider_type, :location, :food_type, :meal_type)
-                """), locals())
-            st.success("✅ Food item added successfully.")
+            new_row = pd.DataFrame([{
+                'food_id': food_id,
+                'food_name': food_name,
+                'quantity': quantity,
+                'expiry_date': expiry_date,
+                'provider_id': provider_id,
+                'provider_type': provider_type,
+                'location': location,
+                'food_type': food_type,
+                'meal_type': meal_type
+            }])
+            st.session_state['food_data'] = pd.concat([food, new_row], ignore_index=True)
+            st.success("✅ Food item added (temporarily).")
 
-# ---- CRUD: DELETE FOOD ----
 elif menu == "Delete a Food Item":
-    st.subheader("🗑️ Delete a Food Listing")
-    df = run_query("SELECT food_id, food_name FROM food_listings_data")
-    selected = st.selectbox("Select Food ID to delete", df['food_id'])
+    st.subheader("🗑️ Delete a Food Listing (Temporary)")
+    selected = st.selectbox("Select Food ID to delete", food['food_id'])
     if st.button("Delete"):
-        with engine.begin() as conn:
-            conn.execute(text("DELETE FROM food_listings_data WHERE food_id = :fid"), {"fid": selected})
-        st.success(f"✅ Deleted food item with ID {selected}.")
+        updated_df = food[food['food_id'] != selected]
+        st.session_state['food_data'] = updated_df
+        st.success(f"✅ Deleted food item with ID {selected} (temporarily).")
 
